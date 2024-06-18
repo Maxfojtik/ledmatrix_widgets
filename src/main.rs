@@ -2,10 +2,7 @@ mod ledmatrix;
 mod matrix;
 mod widget;
 use std::{
-    env::{args, args_os},
-    process::exit,
-    thread,
-    time::Duration,
+    env::{args, args_os}, process::exit, thread, time::Duration
 };
 
 use clap::Parser;
@@ -15,7 +12,7 @@ use std::time::Instant;
 use crate::widget::{AllCPUsWidget, BatteryWidgetUgly, RAMWidget, ClockWidget, UpdatableWidget};
 
 
-const UPDATE_PERIOD:i32 = 500;
+const UPDATE_PERIOD:i32 = 100;
 
 
 #[derive(Parser)]
@@ -50,6 +47,9 @@ fn main() {
     // Overall brightness
     // update rate
 
+    let matrix1 = "FRANKDEBZA1404101JE";
+    let matrix2 = "FRAKDEBZA1404101J2";
+
     let mut program = Program::Default;
 
     if args_os().len() > 1 {
@@ -60,15 +60,52 @@ fn main() {
             program = Program::ListWid;
         }
     }
-
+    fn detect_and_init_matrixes(mats: &mut Vec<LedMatrix>)
+    {
+        let detected_mats = LedMatrix::detect();
+        for i in detected_mats
+        {
+            let mut found = false;
+            for k in &mut *mats
+            {
+                if k.info.usb_info.serial_number == i.info.usb_info.serial_number
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if !found
+            {
+                let mat = LedMatrix::connect(i);
+                if mat.is_some()//sometimes we fail to connect. just dont initialize it
+                {
+                    let mut mat = mat.unwrap();
+                    mat.draw_bool_matrix([[false; 9]; 34]);
+                    mat.set_full_brightness(65);
+                    mats.push(mat);
+                }
+            }
+        }
+    }
+    fn error_mat(mats: &mut Vec<LedMatrix>, i: usize)
+    {
+        println!("Matrix on {} had a communication error, reconnecting...", mats[i].info.port_info.port_name);
+        mats.remove(0);
+        thread::sleep(Duration::from_millis(1000));
+    }
+    fn draw_on(mats: &mut Vec<LedMatrix>, i: usize, matrix: [[u8; 9]; 34])
+    {
+        let result = mats[i].draw_matrix(matrix);
+        if result.is_err()
+        {
+            error_mat(mats, 0);
+        }
+    }
     match program {
         Program::Default => {
-            let mut mats = LedMatrix::detect();
-            if mats.len() == 0 {
-                println!("No modules found, unable to continue.");
-                exit(1);
-            }
-
+            let mut mats: Vec<LedMatrix> = vec![];
+            detect_and_init_matrixes(&mut mats);
+            // let num_mats = mats.len();
             // No arguments provided? Start the
             if args().len() <= 1 {
                 let mut bat = BatteryWidgetUgly::new();
@@ -76,32 +113,60 @@ fn main() {
                 let mut cpu = AllCPUsWidget::new(false);
                 let mut clock = ClockWidget::new();
 
-                let blank = [[0; 9]; 34];
 
-                if mats.len() == 2 {
-                    mats[1].draw_matrix(blank);
-                }
                 let mut ticker:u8 = 0;
                 loop {
                     let start = Instant::now();
-
                     // do stuff
 
                     bat.update();
                     ram.update();
-                    if(ticker%2==0)
+                    if ticker%5==0
                     {
                         cpu.update();
                         clock.update();
                     }
                     ticker = ticker.wrapping_add(1);
 
-                    let mut matrix = [[0; 9]; 34];
+                    let mut matrix: [[u8; 9]; 34] = [[0; 9]; 34];
                     matrix = matrix::emplace(matrix, &bat, 0, 0);
                     matrix = matrix::emplace(matrix, &ram, 0, 3);
                     matrix = matrix::emplace(matrix, &cpu, 0, 6);
                     matrix = matrix::emplace(matrix, &clock, 0, 23);
-                    mats[0].draw_matrix(matrix);
+                    
+
+                    if mats.len() == 1//only one connected
+                    {
+                        draw_on(&mut mats, 0, matrix);
+                    }
+                    else if mats.len() == 2
+                    {
+                        if(mats[0].info.usb_info.serial_number.as_ref().unwrap() == matrix1)
+                        {
+                            draw_on(&mut mats, 0, matrix);
+                            if mats.len()==2
+                            {
+                                draw_on(&mut mats, 1, [[0; 9]; 34]);
+                            }
+                        }
+                        else {
+                            draw_on(&mut mats, 0, [[0; 9]; 34]);
+                            if mats.len()==2
+                            {
+                                draw_on(&mut mats, 1, matrix);
+                            }
+                        }
+                    }
+                    else 
+                    {
+                        println!("No Matrixes found, checking again soon");
+                        thread::sleep(Duration::from_millis(1000));
+                    }
+                    detect_and_init_matrixes(&mut mats);
+
+
+
+
                     let elapsed = start.elapsed().as_millis();
                     let time_to_sleep = UPDATE_PERIOD-elapsed as i32;
                     // println!("time: {time_to_sleep}");

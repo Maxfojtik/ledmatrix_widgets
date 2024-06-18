@@ -191,18 +191,36 @@ impl UpdatableWidget for BatteryWidget {
     }
 }
 
+const HISTORY_LENGTH: u8 = 120;
+const HIGHLIGHT_WIDTH: f32 = 1.5;
+
 /// -------- Battery Widget Ugly --------
 /// Create a widget that displays the battery remaining in the laptop
 pub struct BatteryWidgetUgly {
     bat_level_pct: f32,
+    bat_level_pct_hist: Vec<f32>,
     state: battery::State,
-    looper: u8,
+    highlight_pos: f32,
+    bar_width_in_pixels: f32,
+
 }
 
 impl BatteryWidgetUgly {
     pub fn new() -> BatteryWidgetUgly {
         println!("Initializing BatteryWidgetUgly");
-        BatteryWidgetUgly { bat_level_pct: 0.0, state: battery::State::Discharging, looper: 0 }
+        let bat_man = battery::Manager::new();
+        let bat_level_pct = bat_man.as_ref()
+            .unwrap()
+            .batteries()
+            .unwrap()
+            .enumerate()
+            .next()
+            .unwrap()
+            .1
+            .unwrap()
+            .state_of_charge()
+            .get::<battery::units::ratio::percent>();
+        BatteryWidgetUgly { bat_level_pct, state: battery::State::Discharging, highlight_pos: 0.0, bar_width_in_pixels: 0.0, bat_level_pct_hist: vec![bat_level_pct] }
     }
 }
 
@@ -221,7 +239,15 @@ impl UpdatableWidget for BatteryWidgetUgly {
             .unwrap()
             .state_of_charge()
             .get::<battery::units::ratio::percent>();
-
+        
+        let mut highlight_speed = 0.0;
+        self.bat_level_pct_hist.insert(0, self.bat_level_pct);
+        let popping = self.bat_level_pct_hist.len() > HISTORY_LENGTH.into();
+        if popping//we above full length, pop the last one to shorten
+        {
+            let last_val = self.bat_level_pct_hist.pop().unwrap();
+            highlight_speed = (self.bat_level_pct - last_val) * 5.0;
+        }
 
         let state = bat_man.as_ref()
             .unwrap()
@@ -234,7 +260,30 @@ impl UpdatableWidget for BatteryWidgetUgly {
             .unwrap()
             .state();
         self.state = state;
-        self.looper = self.looper.wrapping_add(1);
+        // self.looper = self.looper.wrapping_add(1);
+        let width = self.get_shape().x;
+        self.bar_width_in_pixels = self.bat_level_pct / 100.0 * width as f32;
+
+
+        self.highlight_pos += highlight_speed;
+        // println!("{highlight_speed}");
+
+
+        if popping
+        {
+            if self.highlight_pos > self.bar_width_in_pixels + HIGHLIGHT_WIDTH
+            {
+                self.highlight_pos = -HIGHLIGHT_WIDTH;
+            }
+            if self.highlight_pos < -HIGHLIGHT_WIDTH
+            {
+                self.highlight_pos = self.bar_width_in_pixels + HIGHLIGHT_WIDTH;
+            }
+        }
+        else
+        {
+            self.highlight_pos = -100.0;
+        }
     }
 
     fn get_matrix(&self) -> Vec<u8> {
@@ -243,7 +292,7 @@ impl UpdatableWidget for BatteryWidgetUgly {
 
         let width = self.get_shape().x;
 
-        let bar_width_in_pixels = self.bat_level_pct / 100.0 * width as f32;
+        // let bar_width_in_pixels;
         for x in 0..width {
             if self.state == battery::State::Full
             {
@@ -251,7 +300,7 @@ impl UpdatableWidget for BatteryWidgetUgly {
             }
             else
             {
-                let percent_on = bar_width_in_pixels - x as f32;// this is a float telling how much the pixel should be on
+                let percent_on = self.bar_width_in_pixels - x as f32;// this is a float telling how much the pixel should be on
                 if percent_on > 1.0 {//if we are more than 100% on
                     out[x] = ON_DIM;
                 }
@@ -259,23 +308,30 @@ impl UpdatableWidget for BatteryWidgetUgly {
                 {
                     out[x] = (ON_DIM as f32 * percent_on) as u8;
                 }
-                if (x as f32) < bar_width_in_pixels
+                let highlight = (HIGHLIGHT_WIDTH-(self.highlight_pos - x as f32).abs()) / HIGHLIGHT_WIDTH;//0-1
+                let highlight255 = (highlight * 255 as f32) as u8;
+                if highlight255 > out[x] && out[x] > 5
                 {
-                    if self.state == battery::State::Charging
-                    {
-                        if (self.looper.wrapping_sub(x as u8)) % (bar_width_in_pixels as u8 + 1) < 2
-                        {
-                            out[x] = 255;
-                        }
-                    }
-                    else
-                    {
-                        if (self.looper.wrapping_add(x as u8)) % (bar_width_in_pixels as u8 + 1) < 2
-                        {
-                            out[x] = 255;
-                        }
-                    }
+                    out[x] = highlight255;
                 }
+                
+                // if (x as f32) < bar_width_in_pixels
+                // {
+                //     if self.state == battery::State::Charging
+                //     {
+                //         if (self.looper.wrapping_sub(x as u32)) % (bar_width_in_pixels as u32 + 1) < 2
+                //         {
+                //             out[x] = 255;
+                //         }
+                //     }
+                //     else
+                //     {
+                //         if (self.looper.wrapping_add(x as u32)) % (bar_width_in_pixels as u32 + 1) < 2
+                //         {
+                //             out[x] = 255;
+                //         }
+                //     }
+                // }
             }
             out[x + width] = out[x];
         }
